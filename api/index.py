@@ -1,44 +1,106 @@
 """
-Website "Lagu & Foto" (Recode Aesthetic Frame + Cute Particles + Synced Lyrics + Auto Heart Finale)
+Galeri Pribadi + Animasi Foto, Lagu & Lirik  (Flask, cocok untuk Vercel: api/index.py)
+
+- Masuk pakai PIN (dicek di server, sesi pakai cookie bertanda tangan)
+- Foto disimpan di browser perangkatmu (IndexedDB), tidak diupload ke server
+- Lagu: taruh di public/lagu/ -> file audio + lirik .lrc dengan NAMA SAMA
+    contoh:  Backstreet Boys - Shape of My Heart.mp3
+             Backstreet Boys - Shape of My Heart.lrc
+  Opsional: file .json bernama sama untuk judul/artis/geser lirik:
+    {"judul": "Shape of My Heart", "artis": "Backstreet Boys", "mulai_lirik": 0, "offset": 0}
+  Kalau tidak ada .json, judul/artis diambil dari nama file ("Artis - Judul").
 """
 
+import hashlib
+import hmac
 import html
 import json
+import os
 import re
+import time
 from pathlib import Path
 from urllib.parse import quote
 
-from flask import Flask, Response, jsonify
+from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 app = Flask(__name__)
 
 # ============ PENGATURAN (silakan ubah) ============
-JUDUL = " Buat Pendekkkk "  # judul halaman web (juga muncul di layar akhir)
-ARTIS = "Backstreet Boys"
-JUDUL_LAGU = "Shape of My Heart"
+PIN = os.environ.get("PIN_GALERI", "1234")   # GANTI! Di Vercel: Settings > Environment Variables > PIN_GALERI (angka saja)
+NAMA_GALERI = "Galeri Kenangan"
+JUDUL = "Buat Pendekkkk"
 PESAN_AWAL = "Hadiah Buat Pendekkkk 156"
-TOMBOL_AWAL = "Mulai"
 FOTO_GANTI_DETIK = 5
-MAKS_FOTO = 7                      # batas foto yang bisa diupload pengunjung
-MULAI_LIRIK_DI_DETIK = 0.0        # detik ke berapa lirik pertama muncul di audio kamu (misal 0.0, 0.5, 1.0)
-OFFSET_LIRIK = 0.0                 # geser halus tambahan (bisa + atau - dalam detik)
-JEDA_FOTO_LOVE_DETIK = 0.35        # jeda muncul tiap foto membentuk love di akhir
-TAHAN_LOVE_DETIK = 3.5             # berapa lama susunan love ditahan sebelum muncul layar selesai
+MASA_LOGIN_JAM = 12                # berapa jam sampai PIN diminta lagi
+OFFSET_LIRIK = 0.0                 # geser halus semua lirik (detik, boleh minus)
+JEDA_FOTO_LOVE_DETIK = 0.35
+TAHAN_LOVE_DETIK = 3.5
 # ===================================================
 
-# File ini ada di api/, jadi root project = satu folder di atasnya.
-# Lagu & lirik ada di folder public/lagu/ (disajikan Vercel langsung dari root URL).
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "public"
 LAGU_DIR = STATIC / "lagu"
 AUDIO_EXT = {".mp3", ".m4a", ".ogg", ".wav", ".aac", ".flac"}
+COOKIE = "galeri_sesi"
+_GAGAL = {}  # ip -> [jumlah, waktu pertama]  (pembatas percobaan PIN)
 
-# Jangan mkdir di sini: filesystem Vercel read-only.
+
+# ---------- keamanan PIN ----------
+def _rahasia() -> bytes:
+    kunci = os.environ.get("SECRET_KEY") or hashlib.sha256(("galeri::" + PIN).encode()).hexdigest()
+    return kunci.encode()
 
 
+def _buat_token() -> str:
+    pesan = f"v1.{int(time.time() + MASA_LOGIN_JAM * 3600)}"
+    return pesan + "." + hmac.new(_rahasia(), pesan.encode(), hashlib.sha256).hexdigest()
+
+
+def _sudah_login() -> bool:
+    try:
+        v, exp, sig = (request.cookies.get(COOKIE) or "").split(".")
+        benar = hmac.new(_rahasia(), f"{v}.{exp}".encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(sig, benar) and int(exp) > time.time()
+    except Exception:
+        return False
+
+
+def _ip() -> str:
+    return (request.headers.get("x-forwarded-for", "").split(",")[0].strip()) or request.remote_addr or "?"
+
+
+@app.post("/api/login")
+def login():
+    ip, kini = _ip(), time.time()
+    cat = _GAGAL.get(ip)
+    if cat and kini - cat[1] > 300:
+        _GAGAL.pop(ip, None)
+        cat = None
+    if cat and cat[0] >= 5:
+        return jsonify(pesan="Terlalu banyak percobaan. Coba lagi 5 menit lagi."), 429
+    pin = str((request.get_json(silent=True) or {}).get("pin", ""))
+    if hmac.compare_digest(pin.encode(), PIN.encode()):
+        _GAGAL.pop(ip, None)
+        resp = jsonify(ok=True)
+        https = request.is_secure or request.headers.get("x-forwarded-proto") == "https"
+        resp.set_cookie(COOKIE, _buat_token(), max_age=MASA_LOGIN_JAM * 3600,
+                        httponly=True, samesite="Lax", secure=https)
+        return resp
+    _GAGAL[ip] = [(cat[0] + 1) if cat else 1, cat[1] if cat else kini]
+    time.sleep(0.7)
+    return jsonify(pesan="PIN salah"), 401
+
+
+@app.post("/api/logout")
+def logout():
+    resp = jsonify(ok=True)
+    resp.delete_cookie(COOKIE)
+    return resp
+
+
+# ---------- daftar lagu ----------
 def _url(path: Path) -> str:
-    rel = path.relative_to(STATIC)
-    return "/" + "/".join(quote(p) for p in rel.parts)
+    return "/" + "/".join(quote(p) for p in path.relative_to(STATIC).parts)
 
 
 def _baca_teks(f: Path) -> str:
@@ -51,51 +113,120 @@ def _baca_teks(f: Path) -> str:
         return raw.decode("cp1252", errors="ignore")
 
 
-def _geser_lrc(teks: str, target_first_sec: float, extra_offset: float) -> str:
-    """Geser seluruh timestamp [mm:ss.xx] agar baris pertama mulai di target_first_sec."""
-    if not teks.strip():
+_POLA = re.compile(r"\[(\d+):(\d+(?:[.:]\d+)?)\]")
+
+
+def _detik(m) -> float:
+    return int(m.group(1)) * 60 + float(m.group(2).replace(":", "."))
+
+
+def _geser_lrc(teks: str, mulai, offset: float) -> str:
+    """mulai='auto': kalau lirik pertama > 45 dtk, anggap audio dipotong -> geser ke detik 0.
+    mulai=angka: lirik pertama dipaksa di detik itu. mulai=None: tidak digeser."""
+    ts = [_detik(m) for m in _POLA.finditer(teks)]
+    if not ts:
+        return teks
+    pertama = min(ts)
+    if mulai == "auto":
+        mulai = 0.0 if pertama > 45 else None
+    geser = ((float(mulai) - pertama) if mulai is not None else 0.0) + offset
+    if not geser:
         return teks
 
-    pat = re.compile(r"\[(\d+):(\d+(?:[.:]\d+)?)\]")
-    times = []
-    for m in pat.finditer(teks):
-        mins = int(m.group(1))
-        secs = float(m.group(2).replace(":", "."))
-        times.append(mins * 60.0 + secs)
+    def ganti(m):
+        t = max(0.0, _detik(m) + geser)
+        return f"[{int(t // 60):02d}:{t % 60:05.2f}]"
 
-    if not times:
-        return teks
-
-    first_raw = min(times)
-    shift = (target_first_sec - first_raw) + extra_offset
-
-    def repl(match):
-        mins = int(match.group(1))
-        secs = float(match.group(2).replace(":", "."))
-        new_t = max(0.0, mins * 60.0 + secs + shift)
-        nm = int(new_t // 60)
-        ns = new_t - nm * 60
-        return f"[{nm:02d}:{ns:05.2f}]"
-
-    return pat.sub(repl, teks)
+    return _POLA.sub(ganti, teks)
 
 
-@app.route("/data")
+def _daftar_lagu():
+    if not LAGU_DIR.is_dir():
+        return []
+    files = sorted(f for f in LAGU_DIR.iterdir() if f.is_file())
+    audios = [f for f in files if f.suffix.lower() in AUDIO_EXT]
+    lrc = {}
+    for f in files:
+        if f.suffix.lower() in (".lrc", ".txt") and (f.stem.lower() not in lrc or f.suffix.lower() == ".lrc"):
+            lrc[f.stem.lower()] = f
+    hasil = []
+    for i, a in enumerate(audios):
+        lf = lrc.get(a.stem.lower())
+        if lf is None and len(audios) == 1 and lrc:      # satu lagu saja: pasangkan lirik apa pun
+            lf = lrc[sorted(lrc)[0]]
+        meta = {}
+        mf = a.with_name(a.stem + ".json")
+        if mf.exists():
+            try:
+                meta = json.loads(_baca_teks(mf))
+            except Exception:
+                meta = {}
+        nama = a.stem.replace("_", " ")
+        artis, judul = (nama.split(" - ", 1) if " - " in nama else ("", nama))
+        teks = _baca_teks(lf) if lf else ""
+        teks = _geser_lrc(teks, meta.get("mulai_lirik", "auto"),
+                          float(meta.get("offset", 0)) + float(OFFSET_LIRIK))
+        hasil.append({
+            "id": f"l{i}",
+            "judul": meta.get("judul", judul.strip()),
+            "artis": meta.get("artis", artis.strip()),
+            "audio": _url(a),
+            "lirik": teks,
+        })
+    return hasil
+
+
+@app.get("/data")
 def data():
-    lagu_all = sorted(LAGU_DIR.iterdir()) if LAGU_DIR.is_dir() else []
-    audio = next((f for f in lagu_all if f.suffix.lower() in AUDIO_EXT), None)
-    semua = [f for f in lagu_all if f.is_file()]
-    kandidat = [f for f in semua if f.suffix.lower() == ".lrc"] + [
-        f for f in semua if f.suffix.lower() == ".txt"
-    ]
-    lirik_mentah = _baca_teks(kandidat[0]) if kandidat else ""
-    lirik = _geser_lrc(lirik_mentah, float(MULAI_LIRIK_DI_DETIK), float(OFFSET_LIRIK))
+    if not _sudah_login():
+        abort(401)
+    return jsonify(lagu=_daftar_lagu())
 
-    return jsonify(
-        audio=_url(audio) if audio else None,
-        lirik=lirik,
-        files=[f.name for f in semua],
-    )
+
+@app.get("/lagu/<path:nama>")
+def file_lagu(nama):  # dipakai saat dijalankan lokal (di Vercel, public/ disajikan langsung)
+    if not _sudah_login():
+        abort(401)
+    return send_from_directory(LAGU_DIR, nama)
+
+
+PIN_HTML = r"""<!DOCTYPE html><html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>__NAMA__</title>
+<style>
+html,body{margin:0;height:100%;background:radial-gradient(ellipse at center,#2b101b,#0a0508 75%);color:#fff;font-family:Georgia,serif;overflow:hidden;user-select:none}
+main{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:20px;text-align:center}
+.h{font-size:36px;color:#ff7597;text-shadow:0 0 24px rgba(255,117,151,.6)}
+h1{margin:0;font-weight:400;font-style:italic;font-size:clamp(22px,6vw,32px)}
+p{margin:0;font-size:13px;opacity:.6}
+#dots{display:flex;gap:14px;height:16px}
+#dots i{width:14px;height:14px;border-radius:50%;border:2px solid #ff7597;transition:background .15s}
+#dots i.on{background:#ff7597}
+#dots.err{animation:sh .4s}
+@keyframes sh{20%,60%{transform:translateX(-9px)}40%,80%{transform:translateX(9px)}}
+#pad{display:grid;grid-template-columns:repeat(3,72px);gap:12px}
+#pad button{height:60px;border-radius:50%;border:1px solid rgba(255,182,193,.3);background:rgba(20,10,15,.55);color:#fff;font:inherit;font-size:22px;cursor:pointer}
+#pad button:active{background:rgba(255,117,151,.35)}
+#msg{min-height:1.2em;font-size:13px;color:#ffb3c6}
+</style></head><body><main>
+<div class="h">&#9829;</div><h1>__NAMA__</h1><p>Masukkan PIN</p>
+<div id="dots"></div><div id="msg"></div>
+<div id="pad"></div>
+</main><script>
+const N=__PANJANG__;let pin='',kunci=false;
+const dots=document.getElementById('dots'),msg=document.getElementById('msg'),pad=document.getElementById('pad');
+for(let i=0;i<N;i++)dots.appendChild(document.createElement('i'));
+['1','2','3','4','5','6','7','8','9','','0','\u232b'].forEach(k=>{const b=document.createElement('button');b.type='button';b.textContent=k;if(!k)b.style.visibility='hidden';b.onclick=()=>tekan(k);pad.appendChild(b);});
+function gambar(){[...dots.children].forEach((d,i)=>d.classList.toggle('on',i<pin.length));}
+function tekan(k){if(kunci)return;if(k==='\u232b')pin=pin.slice(0,-1);else if(/\d/.test(k)&&pin.length<N)pin+=k;gambar();if(pin.length===N)kirim();}
+async function kirim(){kunci=true;msg.textContent='';
+try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin})});
+if(r.ok){location.replace('/');return;}
+const d=await r.json().catch(()=>({}));msg.textContent=d.pesan||'PIN salah';}
+catch(e){msg.textContent='Gagal terhubung';}
+dots.classList.add('err');setTimeout(()=>{dots.classList.remove('err');pin='';gambar();kunci=false;},450);}
+addEventListener('keydown',e=>{if(/^\d$/.test(e.key))tekan(e.key);else if(e.key==='Backspace')tekan('\u232b');});
+</script></body></html>
+"""
 
 
 HTML = r"""<!DOCTYPE html>
@@ -149,7 +280,7 @@ HTML = r"""<!DOCTYPE html>
 
   #frame-box {
     position: relative;
-    width: min(74vw, 310px);
+    width: min(74vw, 310px, 38vh);
     aspect-ratio: 4 / 5;
     background: linear-gradient(145deg, #ffffff 0%, #fff0f4 100%);
     padding: 12px 12px 38px 12px;
@@ -355,6 +486,98 @@ HTML = r"""<!DOCTYPE html>
     cursor: pointer;
   }
   #foto-info { font-size: 12px; opacity: 0.75; }
+
+  /* ================= GALERI ================= */
+  body:not(.in-player) .pl { display: none !important; }
+  body.in-player #view-gallery { display: none; }
+  body:not(.in-player) #bg-blur { opacity: 0; }
+  #view-gallery {
+    position: fixed; inset: 0; z-index: 4; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    background: radial-gradient(ellipse at top, rgba(255,117,151,.13), transparent 55%);
+  }
+  #g-head {
+    position: sticky; top: 0; z-index: 5; display: flex; justify-content: space-between;
+    align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: max(14px, env(safe-area-inset-top)) 16px 12px;
+    background: rgba(13, 7, 11, .82); backdrop-filter: blur(14px);
+    border-bottom: 1px solid rgba(255,182,193,.12);
+  }
+  #g-head h1 { margin: 0; font-weight: 400; font-style: italic; font-size: clamp(20px, 5vw, 28px); }
+  .hh { color: var(--rose); }
+  #g-sub { margin: 2px 0 0; font-size: 12px; opacity: .6; }
+  .g-act { display: flex; gap: 8px; }
+  .btn {
+    background: rgba(20,10,15,.55); color: #fff; border: 1px solid rgba(255,182,193,.3);
+    border-radius: 999px; padding: 8px 15px; font: inherit; font-size: 13px; cursor: pointer;
+    text-decoration: none; display: inline-block; transition: background .2s, transform .15s;
+  }
+  .btn:hover { background: rgba(255,117,151,.25); }
+  .btn:active { transform: scale(.95); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .btn.primary { background: linear-gradient(135deg, var(--rose), #ff8fab); color: #1f060d; font-weight: bold; border: 0; box-shadow: 0 6px 18px rgba(255,117,151,.35); }
+  .btn.danger { color: #ffb3b3; border-color: rgba(255,120,120,.5); }
+  #g-empty { text-align: center; padding: 18vh 24px; opacity: .8; }
+  #g-empty .big { font-size: 54px; color: var(--rose); text-shadow: 0 0 30px rgba(255,117,151,.5); }
+  #g-grid { columns: 2; column-gap: 12px; padding: 14px 14px 120px; }
+  @media (min-width: 640px) { #g-grid { columns: 3; } }
+  @media (min-width: 980px) { #g-grid { columns: 4; } }
+  @media (min-width: 1300px) { #g-grid { columns: 5; } }
+  .ph {
+    position: relative; margin: 0 0 12px; break-inside: avoid; border-radius: 14px; overflow: hidden;
+    background: #231018; cursor: pointer; box-shadow: 0 8px 22px rgba(0,0,0,.5);
+    opacity: 0; animation: fup .5s ease forwards; animation-delay: calc(var(--i) * 35ms);
+    transition: transform .25s, box-shadow .25s;
+  }
+  @keyframes fup { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+  .ph:hover { transform: translateY(-3px) rotate(-.4deg); box-shadow: 0 12px 28px rgba(0,0,0,.6), 0 0 18px rgba(255,117,151,.25); }
+  .ph img { width: 100%; display: block; }
+  .ph.sel { outline: 3px solid var(--rose); outline-offset: -3px; }
+  .ph.sel img { filter: brightness(.8); }
+  .cek {
+    position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,.75); background: rgba(0,0,0,.3); color: #fff;
+    font: bold 13px Georgia, serif; cursor: pointer; padding: 0; opacity: .55; transition: opacity .2s;
+  }
+  .ph:hover .cek, body.selmode .cek { opacity: 1; }
+  .ph.sel .cek { background: var(--rose); border-color: #fff; }
+  #selbar {
+    position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+    z-index: 8; display: none; align-items: center; gap: 8px; max-width: 96vw;
+    background: rgba(20,10,15,.88); backdrop-filter: blur(12px); white-space: nowrap;
+    border: 1px solid rgba(255,182,193,.25); border-radius: 999px; padding: 8px 10px 8px 16px; font-size: 13px;
+  }
+  body.selmode #selbar { display: flex; }
+  #selbar .btn { padding: 7px 12px; font-size: 12px; }
+  .sheet {
+    position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.6);
+    display: none; align-items: flex-end; justify-content: center;
+  }
+  .sheet.on { display: flex; }
+  .sheet .card {
+    width: min(520px, 100%); max-height: 88vh; overflow: auto; display: flex; flex-direction: column; gap: 14px;
+    background: #1a0b12; border: 1px solid rgba(255,182,193,.2); border-radius: 22px 22px 0 0;
+    padding: 20px 20px max(20px, env(safe-area-inset-bottom));
+  }
+  .sheet h2 { margin: 0; font-weight: 400; font-style: italic; font-size: 22px; }
+  .lagu { display: flex; gap: 12px; align-items: center; padding: 12px; border-radius: 14px; border: 1px solid rgba(255,182,193,.18); cursor: pointer; }
+  .lagu:has(input:checked) { border-color: var(--rose); background: rgba(255,117,151,.12); }
+  .lagu small { display: block; opacity: .6; font-size: 12px; margin-top: 2px; }
+  .lagu input, .row input { accent-color: var(--rose); }
+  .row { display: flex; gap: 10px; align-items: center; justify-content: flex-end; font-size: 13px; }
+  #lb { position: fixed; inset: 0; z-index: 40; background: rgba(8,3,6,.96); display: none; align-items: center; justify-content: center; touch-action: pan-y; }
+  #lb.on { display: flex; }
+  #lb-img { max-width: 100%; max-height: 80vh; object-fit: contain; border-radius: 10px; }
+  #lb-x { position: absolute; top: max(12px, env(safe-area-inset-top)); right: 12px; }
+  .nav { position: absolute; top: 50%; transform: translateY(-50%); font-size: 22px; padding: 8px 15px; }
+  #lb-p { left: 10px; } #lb-n { right: 10px; }
+  #lb-bar { position: absolute; bottom: max(14px, env(safe-area-inset-bottom)); left: 0; right: 0; display: flex; gap: 10px; justify-content: center; align-items: center; font-size: 12px; }
+  #toast {
+    position: fixed; left: 50%; top: max(70px, env(safe-area-inset-top)); transform: translate(-50%, -10px); z-index: 50;
+    background: rgba(255,117,151,.95); color: #1f060d; padding: 9px 18px; border-radius: 999px; font-size: 13px;
+    opacity: 0; pointer-events: none; transition: opacity .3s, transform .3s; max-width: 90vw; text-align: center;
+  }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+  @media (max-width: 520px) { .top-controls .lirik-sync { display: none; } #judul { max-width: 40vw; } }
 </style>
 </head>
 <body>
@@ -363,13 +586,16 @@ HTML = r"""<!DOCTYPE html>
 <div class="vignette"></div>
 <canvas id="particles"></canvas>
 
-<div id="judul">__JUDUL_HTML__<span class="meta-lagu" id="meta-lagu"></span></div>
+<div id="judul" class="pl">__JUDUL_HTML__<span class="meta-lagu" id="meta-lagu"></span></div>
 
-<div class="top-controls">
+<div class="top-controls pl">
+  <button id="lm" class="btn-pill lirik-sync" type="button" title="Lirik lebih awal">Lirik −</button>
+  <button id="lp" class="btn-pill lirik-sync" type="button" title="Lirik lebih lambat">Lirik +</button>
   <button id="ctrl" class="btn-pill" type="button">Jeda</button>
+  <button id="tutup" class="btn-pill" type="button" aria-label="Kembali ke galeri">✕</button>
 </div>
 
-<div id="main-wrap">
+<div id="main-wrap" class="pl">
   <div id="frame-box">
     <div id="photo-inner">
       <div class="layer"><img alt="Foto kenangan"></div>
@@ -384,7 +610,7 @@ HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<div id="heart-finale">
+<div id="heart-finale" class="pl">
   <div id="heart-cards"></div>
   <div id="heart-center-badge">
     <span class="big-h">♥</span>
@@ -392,19 +618,44 @@ HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<div id="barwrap" aria-label="Geser posisi lagu"><div id="bar"></div></div>
+<div id="barwrap" class="pl" aria-label="Geser posisi lagu"><div id="bar"></div></div>
 
-<div id="overlay">
+<div id="overlay" class="hide pl">
   <h1 id="pesan">__PESAN__</h1>
-  <div id="upload-area">
-    <input type="file" id="file-input" accept="image/*" multiple hidden>
-    <button id="pilih-foto" class="btn-pill" type="button">+ Pilih foto (maks __MAKS_FOTO__)</button>
-    <div id="thumbs"></div>
-    <div id="foto-info"></div>
-  </div>
-  <button id="mulai" type="button">__TOMBOL__</button>
-  <div id="status"></div>
+  <button id="mulai" type="button">Putar lagi</button>
+  <button id="kembali" class="btn-pill" type="button">Kembali ke galeri</button>
 </div>
+
+<div id="view-gallery">
+  <header id="g-head">
+    <div><h1>__NAMA_GALERI__ <span class="hh">♥</span></h1><p id="g-sub"></p></div>
+    <div class="g-act">
+      <button id="b-tambah" class="btn primary" type="button">+ Foto</button>
+      <button id="b-anim" class="btn" type="button">✦ Animasi</button>
+      <button id="b-kunci" class="btn" type="button">Kunci</button>
+    </div>
+  </header>
+  <div id="g-empty" hidden><div class="big">♥</div><p>Belum ada foto.<br>Tambahkan foto kenangan pertamamu.</p></div>
+  <div id="g-grid"></div>
+  <div id="selbar"><span id="selinfo"></span><button id="sel-batal" class="btn" type="button">Batal</button><button id="sel-hapus" class="btn danger" type="button">Hapus</button><button id="sel-lanjut" class="btn primary" type="button">Lanjut ▸</button></div>
+  <input type="file" id="g-file" accept="image/*" multiple hidden>
+</div>
+
+<div id="sheet" class="sheet"><div class="card">
+  <h2>Pilih lagu</h2>
+  <div id="lagu-list"></div>
+  <label class="row">Ganti foto tiap <input id="detik" type="range" min="3" max="10" value="5"> <b id="detik-v">5</b> detik</label>
+  <div class="row"><button id="sh-batal" class="btn" type="button">Batal</button><button id="sh-putar" class="btn primary" type="button">Putar ▸</button></div>
+</div></div>
+
+<div id="lb">
+  <img id="lb-img" alt="Foto">
+  <button id="lb-x" class="btn" type="button">✕</button>
+  <button id="lb-p" class="btn nav" type="button" aria-label="Sebelumnya">‹</button>
+  <button id="lb-n" class="btn nav" type="button" aria-label="Berikutnya">›</button>
+  <div id="lb-bar"><span id="lb-c"></span><a id="lb-dl" class="btn" download="foto.jpg">Unduh</a><button id="lb-del" class="btn danger" type="button">Hapus</button></div>
+</div>
+<div id="toast"></div>
 
 <script>
 const CFG = {
@@ -416,13 +667,13 @@ const CFG = {
   judulLagu: __JUDUL_LAGU_JS__
 };
 
-(function renderSongMeta() {
+function renderSongMeta() {
   const el = document.getElementById('meta-lagu');
   const parts = [];
   if (CFG.judulLagu) parts.push('♪ ' + CFG.judulLagu);
   if (CFG.artis) parts.push(CFG.artis);
   el.textContent = parts.join(' — ');
-})();
+}
 
 const bgBlur = document.getElementById('bg-blur');
 const mainWrap = document.getElementById('main-wrap');
@@ -448,46 +699,6 @@ let curLine = -2, curPhoto = -1;
 let nudgeSec = 0;
 let finaleTimers = [];
 let inFinale = false;
-
-const fileInput = document.getElementById('file-input');
-const pilihBtn = document.getElementById('pilih-foto');
-const thumbsEl = document.getElementById('thumbs');
-const fotoInfo = document.getElementById('foto-info');
-
-function renderThumbs(pesanTambahan) {
-  thumbsEl.innerHTML = '';
-  fotos.forEach((url, i) => {
-    const box = document.createElement('div');
-    box.className = 'thumb';
-    const im = document.createElement('img');
-    im.src = url;
-    const x = document.createElement('button');
-    x.type = 'button';
-    x.textContent = '×';
-    x.setAttribute('aria-label', 'Hapus foto');
-    x.addEventListener('click', () => {
-      URL.revokeObjectURL(url);
-      fotos.splice(i, 1);
-      renderThumbs();
-    });
-    box.append(im, x);
-    thumbsEl.appendChild(box);
-  });
-  fotoInfo.textContent = fotos.length + ' / ' + CFG.maksFoto + ' foto' + (pesanTambahan ? ' • ' + pesanTambahan : '');
-  pilihBtn.disabled = fotos.length >= CFG.maksFoto;
-  mulaiBtn.disabled = fotos.length === 0;
-}
-
-pilihBtn.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', () => {
-  const files = [...fileInput.files].filter(f => f.type.startsWith('image/'));
-  const sisa = CFG.maksFoto - fotos.length;
-  files.slice(0, sisa).forEach(f => fotos.push(URL.createObjectURL(f)));
-  const kelebihan = files.length > sisa;
-  fileInput.value = '';
-  renderThumbs(kelebihan ? 'maksimal ' + CFG.maksFoto + ' foto' : '');
-});
-renderThumbs();
 
 (function initParticles() {
   const canvas = document.getElementById('particles');
@@ -606,7 +817,7 @@ function parseLyrics(text) {
 function dur() {
   if (usingAudio && audio && isFinite(audio.duration) && audio.duration > 0) return audio.duration;
   const last = hasLrc && lines.length ? lines[lines.length - 1].t + 6 : lines.length * 4;
-  return Math.max(last, 20);
+  return Math.max(last, 20, lines.length ? 0 : fotos.length * CFG.fotoDetik);
 }
 
 function lineTime(i) {
@@ -726,18 +937,18 @@ function runHeartFinale(onDone) {
   mainWrap.classList.add('hidden-finale');
   heartFinale.classList.add('active');
 
-  const count = Math.max(fotos.length, 16);
+  const count = Math.min(40, Math.max(fotos.length, 16));
   const minDim = Math.min(window.innerWidth, window.innerHeight);
   const scaleX = Math.min(window.innerWidth * 0.34, minDim * 0.42);
   const scaleY = Math.min(window.innerHeight * 0.28, minDim * 0.36);
-  const cardSize = Math.max(46, Math.min(76, minDim * 0.11));
+  const cardSize = Math.max(34, Math.min(76, minDim * 0.11 * Math.sqrt(16 / count)));
 
   const els = [];
   for (let i = 0; i < count; i++) {
     const angle = (i / count) * Math.PI * 2;
     const pt = heartPoint(angle, scaleX, scaleY);
     const rot = ((i % 2 === 0 ? 1 : -1) * (4 + (i % 5) * 2.5)).toFixed(1) + 'deg';
-    const src = fotos[i % fotos.length];
+    const src = fotos[Math.floor(i * fotos.length / count) % fotos.length];
 
     const card = document.createElement('div');
     card.className = 'heart-photo';
@@ -754,7 +965,7 @@ function runHeartFinale(onDone) {
     els.push(card);
   }
 
-  const stepMs = Math.max(150, CFG.jedaLoveDetik * 1000);
+  const stepMs = Math.max(120, Math.min(CFG.jedaLoveDetik * 1000, 9000 / count));
   els.forEach((card, idx) => {
     const tId = setTimeout(() => {
       requestAnimationFrame(() => card.classList.add('pop'));
@@ -814,19 +1025,39 @@ function finish() {
   });
 }
 
-async function start() {
-  if (!fotos.length) return;
+let lastPlay = null;
+async function mulaiPemutar(urls, lagu, detik) {
+  lastPlay = { urls, lagu, detik };
+  document.body.classList.add('in-player');
   clearFinale();
   overlay.classList.add('hide');
-  curLine = -2; curPhoto = -1; nudgeSec = 0;
-  base = 0; startPerf = performance.now();
-  started = true; playing = true;
-  ctrlBtn.textContent = 'Jeda';
-  if (usingAudio && audio) {
-    audio.currentTime = 0;
+  if (audio) { audio.pause(); audio = null; }
+  fotos = urls; CFG.fotoDetik = detik;
+  hasLrc = false; lines = []; nudgeSec = 0; usingAudio = false;
+  parseLyrics(lagu ? lagu.lirik : '');
+  CFG.judulLagu = lagu ? lagu.judul : ''; CFG.artis = lagu ? lagu.artis : '';
+  renderSongMeta();
+  if (lagu && lagu.audio) {
+    const a = new Audio(lagu.audio);
+    audio = a; usingAudio = true;
+    a.addEventListener('ended', () => { if (a === audio) finish(); });
+    a.addEventListener('error', () => { if (a === audio) { usingAudio = false; audio = null; base = 0; startPerf = performance.now(); } });
+  }
+  curLine = -2; curPhoto = -1; base = 0; startPerf = performance.now();
+  started = true; playing = true; ctrlBtn.textContent = 'Jeda';
+  if (usingAudio) {
     try { await audio.play(); }
     catch (e) { usingAudio = false; startPerf = performance.now(); }
   }
+}
+
+function keluarPemutar() {
+  started = false; playing = false; usingAudio = false;
+  clearFinale();
+  if (audio) { audio.pause(); audio = null; }
+  overlay.classList.add('hide');
+  bgBlur.style.backgroundImage = '';
+  document.body.classList.remove('in-player');
 }
 
 function toggle() {
@@ -847,41 +1078,205 @@ function adjustSync(delta) {
   nxtEl.textContent = `Geser lirik: ${nudgeSec > 0 ? '+' : ''}${nudgeSec}s`;
 }
 
-async function init() {
-  try {
-    const r = await fetch('/data');
-    const d = await r.json();
-    parseLyrics(d.lirik);
-    if (d.audio) {
-      audio = new Audio(d.audio);
-      audio.preload = 'auto';
-      usingAudio = true;
-      audio.addEventListener('ended', finish);
-      audio.addEventListener('error', () => { usingAudio = false; audio = null; });
-    }
-    const info = [];
-    info.push(d.audio ? 'lagu siap' : 'lagu belum ada');
-    info.push(lines.length ? `${lines.length} baris lirik siap` : 'lirik belum ada');
-    statusEl.textContent = info.join(' • ');
-  } catch (e) {
-    statusEl.textContent = 'Gagal memuat data dari server.';
-  }
-}
-
-mulaiBtn.addEventListener('click', start);
 ctrlBtn.addEventListener('click', toggle);
+mulaiBtn.addEventListener('click', () => { if (lastPlay) mulaiPemutar(lastPlay.urls, lastPlay.lagu, lastPlay.detik); });
+document.getElementById('kembali').addEventListener('click', keluarPemutar);
+document.getElementById('tutup').addEventListener('click', keluarPemutar);
+document.getElementById('lm').addEventListener('click', () => adjustSync(-0.2));
+document.getElementById('lp').addEventListener('click', () => adjustSync(0.2));
 barwrap.addEventListener('click', e => {
   const r = barwrap.getBoundingClientRect();
   seekTo(((e.clientX - r.left) / r.width) * dur());
 });
-window.addEventListener('keydown', e => {
-  if (!started) return;
-  if (e.code === 'Space') { e.preventDefault(); toggle(); }
-  else if (e.code === 'ArrowRight') seekTo(clock() + 5);
-  else if (e.code === 'ArrowLeft') seekTo(clock() - 5);
+
+/* ================= GALERI ================= */
+const $ = s => document.querySelector(s);
+const G = { items: [], sel: [], mode: false, anim: false, lagu: [], lb: -1 };
+const grid = $('#g-grid');
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function toast(m, ms = 2600) {
+  const t = $('#toast'); t.textContent = m; t.classList.add('show');
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), ms);
+}
+
+let db;
+const req = r => new Promise((ok, no) => { r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
+function bukaDB() {
+  return new Promise((ok, no) => {
+    const r = indexedDB.open('galeri-kenangan', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('foto', { keyPath: 'id', autoIncrement: true });
+    r.onsuccess = () => { db = r.result; ok(); };
+    r.onerror = () => no(r.error);
+  });
+}
+const store = m => db.transaction('foto', m).objectStore('foto');
+
+async function muat() {
+  G.items.forEach(i => { URL.revokeObjectURL(i.url); URL.revokeObjectURL(i.turl); });
+  const all = await req(store('readonly').getAll());
+  G.items = all.sort((a, b) => b.added - a.added).map(r => ({ ...r, url: URL.createObjectURL(r.blob), turl: URL.createObjectURL(r.thumb) }));
+  G.sel = G.sel.filter(id => G.items.some(i => i.id === id));
+  render();
+}
+
+function render() {
+  grid.innerHTML = G.items.map((it, i) =>
+    `<figure class="ph" data-id="${it.id}" style="--i:${Math.min(i, 20)}"><img src="${it.turl}" alt="Foto ${i + 1}" loading="lazy"><button class="cek" type="button" aria-label="Pilih foto"></button></figure>`
+  ).join('');
+  $('#g-empty').hidden = G.items.length > 0;
+  ui();
+}
+
+function ui() {
+  document.body.classList.toggle('selmode', G.mode);
+  grid.querySelectorAll('.ph').forEach(f => {
+    const n = G.sel.indexOf(+f.dataset.id);
+    f.classList.toggle('sel', n >= 0);
+    f.querySelector('.cek').textContent = n >= 0 ? n + 1 : '';
+  });
+  $('#g-sub').textContent = G.items.length + ' foto • tersimpan di perangkat ini';
+  $('#selinfo').textContent = G.anim ? `Pilih foto (${G.sel.length})` : `${G.sel.length} dipilih`;
+  $('#sel-hapus').hidden = G.anim;
+  $('#sel-hapus').disabled = !G.sel.length;
+  $('#sel-lanjut').disabled = !G.sel.length;
+}
+
+function toggleSel(id) {
+  const i = G.sel.indexOf(id);
+  if (i >= 0) G.sel.splice(i, 1); else G.sel.push(id);
+  ui();
+}
+
+grid.addEventListener('click', e => {
+  const f = e.target.closest('.ph'); if (!f) return;
+  const id = +f.dataset.id;
+  if (e.target.closest('.cek')) { if (!G.mode) { G.mode = true; G.anim = false; } toggleSel(id); }
+  else if (G.mode) toggleSel(id);
+  else bukaLB(G.items.findIndex(i => i.id === id));
 });
 
-init();
+$('#b-anim').addEventListener('click', () => {
+  if (!G.items.length) return toast('Tambahkan foto dulu ya');
+  G.mode = true; G.anim = true; ui(); toast('Ketuk foto sesuai urutan yang kamu mau');
+});
+$('#sel-batal').addEventListener('click', () => { G.mode = false; G.anim = false; G.sel = []; ui(); });
+$('#sel-hapus').addEventListener('click', () => hapus(G.sel.slice()));
+$('#b-kunci').addEventListener('click', async () => { await fetch('/api/logout', { method: 'POST' }); location.reload(); });
+
+/* ----- tambah foto ----- */
+function muatGbr(f) {
+  return new Promise((ok, no) => {
+    const u = URL.createObjectURL(f), im = new Image();
+    im.onload = () => { im._u = u; ok(im); };
+    im.onerror = () => { URL.revokeObjectURL(u); no(); };
+    im.src = u;
+  });
+}
+function kecil(im, maks, q) {
+  const r = Math.min(1, maks / Math.max(im.naturalWidth, im.naturalHeight));
+  const w = Math.round(im.naturalWidth * r), h = Math.round(im.naturalHeight * r);
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, w, h); x.drawImage(im, 0, 0, w, h);
+  return new Promise(ok => c.toBlob(ok, 'image/jpeg', q));
+}
+$('#b-tambah').addEventListener('click', () => $('#g-file').click());
+$('#g-file').addEventListener('change', async e => {
+  const fs = [...e.target.files]; e.target.value = '';
+  let ok = 0;
+  for (let i = 0; i < fs.length; i++) {
+    toast(`Menyimpan ${i + 1} / ${fs.length}…`, 60000);
+    try {
+      const im = await muatGbr(fs[i]);
+      const blob = await kecil(im, 1800, 0.86), thumb = await kecil(im, 520, 0.8);
+      URL.revokeObjectURL(im._u);
+      await req(store('readwrite').add({ blob, thumb, added: Date.now() + i }));
+      ok++;
+    } catch (err) { /* lewati file yang tidak terbaca */ }
+  }
+  await muat();
+  toast(ok ? `${ok} foto tersimpan ♥` : 'Foto tidak bisa dibaca atau penyimpanan penuh');
+});
+
+async function hapus(ids) {
+  if (!ids.length || !confirm(`Hapus ${ids.length} foto? Ini tidak bisa dibatalkan.`)) return;
+  for (const id of ids) await req(store('readwrite').delete(id));
+  G.sel = []; G.mode = false; G.anim = false; G.lb = -1; $('#lb').classList.remove('on');
+  await muat();
+  toast('Foto dihapus');
+}
+
+/* ----- lightbox ----- */
+function tampilLB() {
+  const it = G.items[G.lb]; if (!it) return;
+  $('#lb-img').src = it.url; $('#lb-dl').href = it.url;
+  $('#lb-c').textContent = `${G.lb + 1} / ${G.items.length}`;
+}
+function bukaLB(i) { if (i < 0) return; G.lb = i; $('#lb').classList.add('on'); tampilLB(); }
+function geserLB(d) { if (G.lb < 0) return; G.lb = (G.lb + d + G.items.length) % G.items.length; tampilLB(); }
+function tutupLB() { G.lb = -1; $('#lb').classList.remove('on'); }
+$('#lb-x').addEventListener('click', tutupLB);
+$('#lb-p').addEventListener('click', () => geserLB(-1));
+$('#lb-n').addEventListener('click', () => geserLB(1));
+$('#lb-del').addEventListener('click', () => { const it = G.items[G.lb]; if (it) hapus([it.id]); });
+let sx = null;
+$('#lb').addEventListener('pointerdown', e => { sx = e.clientX; });
+$('#lb').addEventListener('pointerup', e => { if (sx !== null && Math.abs(e.clientX - sx) > 60) geserLB(e.clientX < sx ? 1 : -1); sx = null; });
+
+/* ----- pilih lagu & putar ----- */
+function bukaSheet() {
+  let last = ''; try { last = localStorage.getItem('lagu-terakhir') || ''; } catch (e) {}
+  const pilih = G.lagu.findIndex(s => s.id === last);
+  const cek = i => (i === (pilih >= 0 ? pilih : 0) ? 'checked' : '');
+  $('#lagu-list').innerHTML = G.lagu.map((s, i) =>
+    `<label class="lagu"><input type="radio" name="lg" value="${i}" ${cek(i)}><span><b>${esc(s.judul)}</b><small>${esc(s.artis || '')}${s.artis ? ' • ' : ''}${s.lirik ? 'ada lirik' : 'tanpa lirik'}</small></span></label>`
+  ).join('') +
+  `<label class="lagu"><input type="radio" name="lg" value="-1" ${G.lagu.length ? '' : 'checked'}><span><b>Tanpa lagu</b><small>foto saja</small></span></label>`;
+  $('#detik').value = CFG.fotoDetik; $('#detik-v').textContent = CFG.fotoDetik;
+  $('#sheet').classList.add('on');
+}
+$('#detik').addEventListener('input', e => { $('#detik-v').textContent = e.target.value; });
+$('#sel-lanjut').addEventListener('click', bukaSheet);
+$('#sh-batal').addEventListener('click', () => $('#sheet').classList.remove('on'));
+$('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') $('#sheet').classList.remove('on'); });
+$('#sh-putar').addEventListener('click', () => {
+  const v = +(document.querySelector('input[name="lg"]:checked') || { value: -1 }).value;
+  const lagu = G.lagu[v] || null;
+  try { if (lagu) localStorage.setItem('lagu-terakhir', lagu.id); } catch (e) {}
+  const urls = G.sel.map(id => (G.items.find(i => i.id === id) || {}).url).filter(Boolean);
+  $('#sheet').classList.remove('on');
+  G.mode = false; G.anim = false; ui();
+  mulaiPemutar(urls, lagu, +$('#detik').value);
+});
+
+window.addEventListener('keydown', e => {
+  if (document.body.classList.contains('in-player')) {
+    if (e.code === 'Escape') keluarPemutar();
+    else if (started && e.code === 'Space') { e.preventDefault(); toggle(); }
+    else if (started && e.code === 'ArrowRight') seekTo(clock() + 5);
+    else if (started && e.code === 'ArrowLeft') seekTo(clock() - 5);
+    else if (e.key === '[') adjustSync(-0.2);
+    else if (e.key === ']') adjustSync(0.2);
+    return;
+  }
+  if (G.lb >= 0) {
+    if (e.code === 'Escape') tutupLB();
+    else if (e.code === 'ArrowRight') geserLB(1);
+    else if (e.code === 'ArrowLeft') geserLB(-1);
+  } else if (e.code === 'Escape' && G.mode) $('#sel-batal').click();
+});
+
+(async function init() {
+  try {
+    await bukaDB();
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+    await muat();
+  } catch (e) { toast('Penyimpanan browser tidak tersedia'); }
+  try {
+    const r = await fetch('/data');
+    if (r.status === 401) { location.reload(); return; }
+    G.lagu = (await r.json()).lagu || [];
+  } catch (e) { /* tanpa lagu */ }
+})();
 requestAnimationFrame(tick);
 </script>
 </body>
@@ -889,22 +1284,28 @@ requestAnimationFrame(tick);
 """
 
 
-@app.route("/")
+@app.get("/")
 def index():
-    page = (
-        HTML.replace("__JUDUL_HTML__", html.escape(JUDUL))
-        .replace("__ARTIS_JS__", json.dumps(ARTIS, ensure_ascii=False))
-        .replace("__JUDUL_LAGU_JS__", json.dumps(JUDUL_LAGU, ensure_ascii=False))
-        .replace("__PESAN__", html.escape(PESAN_AWAL))
-        .replace("__TOMBOL__", html.escape(TOMBOL_AWAL))
-        .replace("__FOTO_DETIK__", str(FOTO_GANTI_DETIK))
-        .replace("__MAKS_FOTO__", str(MAKS_FOTO))
-        .replace("__JEDA_LOVE_DETIK__", str(JEDA_FOTO_LOVE_DETIK))
-        .replace("__TAHAN_LOVE_DETIK__", str(TAHAN_LOVE_DETIK))
-    )
-    return Response(page, mimetype="text/html")
+    if not _sudah_login():
+        page = (PIN_HTML.replace("__NAMA__", html.escape(NAMA_GALERI))
+                .replace("__PANJANG__", str(len(PIN))))
+    else:
+        page = (
+            HTML.replace("__JUDUL_HTML__", html.escape(JUDUL))
+            .replace("__NAMA_GALERI__", html.escape(NAMA_GALERI))
+            .replace("__ARTIS_JS__", '""')
+            .replace("__JUDUL_LAGU_JS__", '""')
+            .replace("__PESAN__", html.escape(PESAN_AWAL))
+            .replace("__FOTO_DETIK__", str(FOTO_GANTI_DETIK))
+            .replace("__MAKS_FOTO__", "0")
+            .replace("__JEDA_LOVE_DETIK__", str(JEDA_FOTO_LOVE_DETIK))
+            .replace("__TAHAN_LOVE_DETIK__", str(TAHAN_LOVE_DETIK))
+        )
+    return Response(page, mimetype="text/html", headers={"Cache-Control": "no-store"})
 
 
 if __name__ == "__main__":
+    if not PIN.isdigit():
+        print("PERINGATAN: PIN sebaiknya angka saja.")
     print("Lagu  :", LAGU_DIR)
     app.run(host="0.0.0.0", port=5000, debug=True)
