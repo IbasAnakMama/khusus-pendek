@@ -2,7 +2,8 @@
 Galeri Pribadi + Animasi Foto, Lagu & Lirik  (Flask, cocok untuk Vercel: api/index.py)
 
 - Masuk pakai PIN (dicek di server, sesi pakai cookie bertanda tangan)
-- Foto disimpan di browser perangkatmu (IndexedDB), tidak diupload ke server
+- Foto disimpan di Vercel Blob (private), jadi muncul di semua perangkat
+- Dua PIN: PIN_GALERI (pemilik: upload/hapus) dan PIN_PACAR (hanya melihat dan memutar animasi)
 - Lagu: taruh di public/lagu/ -> file audio + lirik .lrc dengan NAMA SAMA
     contoh:  Backstreet Boys - Shape of My Heart.mp3
              Backstreet Boys - Shape of My Heart.lrc
@@ -17,9 +18,15 @@ import html
 import json
 import os
 import re
+import secrets
 import time
 from pathlib import Path
 from urllib.parse import quote
+
+try:
+    from vercel.blob import sync as blob   # pip: vercel
+except Exception:
+    blob = None
 
 from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
@@ -27,6 +34,7 @@ app = Flask(__name__)
 
 # ============ PENGATURAN (silakan ubah) ============
 PIN = os.environ.get("PIN_GALERI", "1234")   # GANTI! Di Vercel: Settings > Environment Variables > PIN_GALERI (angka saja)
+PIN_PACAR = os.environ.get("PIN_PACAR", "")   # PIN untuk pacarmu (hanya lihat). Panjang harus SAMA dengan PIN. Kosong = dimatikan
 NAMA_GALERI = "Galeri Kenangan"
 JUDUL = "Buat Pendekkkk"
 PESAN_AWAL = "Hadiah Buat Pendekkkk 156"
@@ -51,18 +59,25 @@ def _rahasia() -> bytes:
     return kunci.encode()
 
 
-def _buat_token() -> str:
-    pesan = f"v1.{int(time.time() + MASA_LOGIN_JAM * 3600)}"
+def _buat_token(peran: str) -> str:
+    pesan = f"v2.{peran}.{int(time.time() + MASA_LOGIN_JAM * 3600)}"
     return pesan + "." + hmac.new(_rahasia(), pesan.encode(), hashlib.sha256).hexdigest()
 
 
-def _sudah_login() -> bool:
+def _peran():
+    """None (belum login), 'admin' (pemilik) atau 'lihat' (pacar)."""
     try:
-        v, exp, sig = (request.cookies.get(COOKIE) or "").split(".")
-        benar = hmac.new(_rahasia(), f"{v}.{exp}".encode(), hashlib.sha256).hexdigest()
-        return hmac.compare_digest(sig, benar) and int(exp) > time.time()
+        v, peran, exp, sig = (request.cookies.get(COOKIE) or "").split(".")
+        benar = hmac.new(_rahasia(), f"{v}.{peran}.{exp}".encode(), hashlib.sha256).hexdigest()
+        if v == "v2" and peran in ("admin", "lihat") and hmac.compare_digest(sig, benar) and int(exp) > time.time():
+            return peran
     except Exception:
-        return False
+        pass
+    return None
+
+
+def _sudah_login() -> bool:
+    return _peran() is not None
 
 
 def _ip() -> str:
@@ -79,11 +94,16 @@ def login():
     if cat and cat[0] >= 5:
         return jsonify(pesan="Terlalu banyak percobaan. Coba lagi 5 menit lagi."), 429
     pin = str((request.get_json(silent=True) or {}).get("pin", ""))
+    peran = None
     if hmac.compare_digest(pin.encode(), PIN.encode()):
+        peran = "admin"
+    elif PIN_PACAR and hmac.compare_digest(pin.encode(), PIN_PACAR.encode()):
+        peran = "lihat"
+    if peran:
         _GAGAL.pop(ip, None)
         resp = jsonify(ok=True)
         https = request.is_secure or request.headers.get("x-forwarded-proto") == "https"
-        resp.set_cookie(COOKIE, _buat_token(), max_age=MASA_LOGIN_JAM * 3600,
+        resp.set_cookie(COOKIE, _buat_token(peran), max_age=MASA_LOGIN_JAM * 3600,
                         httponly=True, samesite="Lax", secure=https)
         return resp
     _GAGAL[ip] = [(cat[0] + 1) if cat else 1, cat[1] if cat else kini]
@@ -180,7 +200,75 @@ def _daftar_lagu():
 def data():
     if not _sudah_login():
         abort(401)
-    return jsonify(lagu=_daftar_lagu())
+    return jsonify(lagu=_daftar_lagu(), peran=_peran())
+
+
+# ---------- foto di Vercel Blob (private) ----------
+_ID = re.compile(r"^\d{13}-[0-9a-f]{6}$")
+
+
+def _butuh(admin=False):
+    p = _peran()
+    if not p:
+        abort(401)
+    if admin and p != "admin":
+        abort(403)
+    if blob is None:
+        abort(503)
+
+
+@app.get("/api/foto")
+def daftar_foto():
+    _butuh()
+    try:
+        hasil = []
+        for b in blob.query_blobs(prefix="thumb/"):
+            fid = b.pathname.split("/", 1)[1].rsplit(".", 1)[0]
+            if _ID.match(fid):
+                hasil.append({"id": fid, "added": int(fid[:13])})
+    except Exception:
+        return jsonify(pesan="Blob belum tersambung"), 503
+    return jsonify(foto=sorted(hasil, key=lambda x: -x["added"]))
+
+
+@app.get("/api/f/<kind>/<fid>")
+def ambil_foto(kind, fid):
+    _butuh()
+    if kind not in ("foto", "thumb") or not _ID.match(fid):
+        abort(404)
+    try:
+        r = blob.get_blob(f"{kind}/{fid}.jpg", access="private")
+    except Exception as e:
+        abort(404 if "NotFound" in type(e).__name__ else 503)
+    return Response(r.body, mimetype="image/jpeg",
+                    headers={"Cache-Control": "private, max-age=31536000, immutable"})
+
+
+@app.post("/api/foto")
+def tambah_foto():
+    _butuh(admin=True)
+    f, t = request.files.get("foto"), request.files.get("thumb")
+    if not f or not t:
+        abort(400)
+    fid = f"{int(time.time() * 1000)}-{secrets.token_hex(3)}"
+    try:  # thumb terakhir: foto baru muncul di daftar kalau keduanya sukses
+        blob.put_blob(f"foto/{fid}.jpg", f.read(), access="private", content_type="image/jpeg")
+        blob.put_blob(f"thumb/{fid}.jpg", t.read(), access="private", content_type="image/jpeg")
+    except Exception:
+        return jsonify(pesan="Gagal menyimpan ke Blob"), 503
+    return jsonify(id=fid)
+
+
+@app.delete("/api/foto/<fid>")
+def hapus_foto(fid):
+    _butuh(admin=True)
+    if not _ID.match(fid):
+        abort(404)
+    try:
+        blob.delete_blob([f"thumb/{fid}.jpg", f"foto/{fid}.jpg"])
+    except Exception:
+        return jsonify(pesan="Gagal menghapus"), 503
+    return jsonify(ok=True)
 
 
 @app.get("/lagu/<path:nama>")
@@ -577,6 +665,7 @@ HTML = r"""<!DOCTYPE html>
     opacity: 0; pointer-events: none; transition: opacity .3s, transform .3s; max-width: 90vw; text-align: center;
   }
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
+  body.viewer #b-tambah, body.viewer #sel-hapus, body.viewer #lb-del { display: none !important; }
   @media (max-width: 520px) { .top-controls .lirik-sync { display: none; } #judul { max-width: 40vw; } }
 </style>
 </head>
@@ -1099,22 +1188,17 @@ function toast(m, ms = 2600) {
   clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), ms);
 }
 
-let db;
-const req = r => new Promise((ok, no) => { r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
-function bukaDB() {
-  return new Promise((ok, no) => {
-    const r = indexedDB.open('galeri-kenangan', 1);
-    r.onupgradeneeded = () => r.result.createObjectStore('foto', { keyPath: 'id', autoIncrement: true });
-    r.onsuccess = () => { db = r.result; ok(); };
-    r.onerror = () => no(r.error);
-  });
+async function api(url, opt) {
+  const r = await fetch(url, opt);
+  if (r.status === 401) { location.reload(); throw new Error('login'); }
+  return r;
 }
-const store = m => db.transaction('foto', m).objectStore('foto');
 
 async function muat() {
-  G.items.forEach(i => { URL.revokeObjectURL(i.url); URL.revokeObjectURL(i.turl); });
-  const all = await req(store('readonly').getAll());
-  G.items = all.sort((a, b) => b.added - a.added).map(r => ({ ...r, url: URL.createObjectURL(r.blob), turl: URL.createObjectURL(r.thumb) }));
+  const r = await api('/api/foto');
+  if (!r.ok) { toast('Penyimpanan online (Blob) belum tersambung'); G.items = []; render(); return; }
+  const d = await r.json();
+  G.items = d.foto.map(f => ({ id: f.id, added: f.added, url: '/api/f/foto/' + f.id, turl: '/api/f/thumb/' + f.id }));
   G.sel = G.sel.filter(id => G.items.some(i => i.id === id));
   render();
 }
@@ -1130,11 +1214,11 @@ function render() {
 function ui() {
   document.body.classList.toggle('selmode', G.mode);
   grid.querySelectorAll('.ph').forEach(f => {
-    const n = G.sel.indexOf(+f.dataset.id);
+    const n = G.sel.indexOf(f.dataset.id);
     f.classList.toggle('sel', n >= 0);
     f.querySelector('.cek').textContent = n >= 0 ? n + 1 : '';
   });
-  $('#g-sub').textContent = G.items.length + ' foto • tersimpan di perangkat ini';
+  $('#g-sub').textContent = G.items.length + ' foto • tersimpan online';
   $('#selinfo').textContent = G.anim ? `Pilih foto (${G.sel.length})` : `${G.sel.length} dipilih`;
   $('#sel-hapus').hidden = G.anim;
   $('#sel-hapus').disabled = !G.sel.length;
@@ -1149,7 +1233,7 @@ function toggleSel(id) {
 
 grid.addEventListener('click', e => {
   const f = e.target.closest('.ph'); if (!f) return;
-  const id = +f.dataset.id;
+  const id = f.dataset.id;
   if (e.target.closest('.cek')) { if (!G.mode) { G.mode = true; G.anim = false; } toggleSel(id); }
   else if (G.mode) toggleSel(id);
   else bukaLB(G.items.findIndex(i => i.id === id));
@@ -1182,27 +1266,33 @@ function kecil(im, maks, q) {
 $('#b-tambah').addEventListener('click', () => $('#g-file').click());
 $('#g-file').addEventListener('change', async e => {
   const fs = [...e.target.files]; e.target.value = '';
-  let ok = 0;
+  let ok = 0, err = '';
   for (let i = 0; i < fs.length; i++) {
-    toast(`Menyimpan ${i + 1} / ${fs.length}…`, 60000);
+    toast(`Mengupload ${i + 1} / ${fs.length}…`, 60000);
     try {
       const im = await muatGbr(fs[i]);
-      const blob = await kecil(im, 1800, 0.86), thumb = await kecil(im, 520, 0.8);
+      const fd = new FormData();
+      fd.append('foto', await kecil(im, 1800, 0.86), 'f.jpg');
+      fd.append('thumb', await kecil(im, 520, 0.8), 't.jpg');
       URL.revokeObjectURL(im._u);
-      await req(store('readwrite').add({ blob, thumb, added: Date.now() + i }));
-      ok++;
-    } catch (err) { /* lewati file yang tidak terbaca */ }
+      const r = await api('/api/foto', { method: 'POST', body: fd });
+      if (r.ok) ok++; else err = 'Upload gagal, cek koneksi Blob';
+    } catch (x) { err = err || 'Ada foto yang tidak bisa dibaca'; }
   }
   await muat();
-  toast(ok ? `${ok} foto tersimpan ♥` : 'Foto tidak bisa dibaca atau penyimpanan penuh');
+  toast(ok ? `${ok} foto tersimpan ♥` : (err || 'Tidak ada foto yang tersimpan'));
 });
 
 async function hapus(ids) {
   if (!ids.length || !confirm(`Hapus ${ids.length} foto? Ini tidak bisa dibatalkan.`)) return;
-  for (const id of ids) await req(store('readwrite').delete(id));
+  let gagal = 0;
+  for (const id of ids) {
+    const r = await api('/api/foto/' + id, { method: 'DELETE' });
+    if (!r.ok) gagal++;
+  }
   G.sel = []; G.mode = false; G.anim = false; G.lb = -1; $('#lb').classList.remove('on');
   await muat();
-  toast('Foto dihapus');
+  toast(gagal ? 'Sebagian foto gagal dihapus' : 'Foto dihapus');
 }
 
 /* ----- lightbox ----- */
@@ -1267,15 +1357,13 @@ window.addEventListener('keydown', e => {
 
 (async function init() {
   try {
-    await bukaDB();
-    if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
-    await muat();
-  } catch (e) { toast('Penyimpanan browser tidak tersedia'); }
-  try {
     const r = await fetch('/data');
     if (r.status === 401) { location.reload(); return; }
-    G.lagu = (await r.json()).lagu || [];
+    const d = await r.json();
+    G.lagu = d.lagu || [];
+    if (d.peran === 'lihat') document.body.classList.add('viewer');
   } catch (e) { /* tanpa lagu */ }
+  try { await muat(); } catch (e) { /* sudah ditangani */ }
 })();
 requestAnimationFrame(tick);
 </script>
@@ -1307,5 +1395,7 @@ def index():
 if __name__ == "__main__":
     if not PIN.isdigit():
         print("PERINGATAN: PIN sebaiknya angka saja.")
+    if PIN_PACAR and len(PIN_PACAR) != len(PIN):
+        print("PERINGATAN: PIN_PACAR harus sama panjang dengan PIN.")
     print("Lagu  :", LAGU_DIR)
     app.run(host="0.0.0.0", port=5000, debug=True)
