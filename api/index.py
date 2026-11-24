@@ -13,10 +13,10 @@ from flask import Flask, Response, jsonify
 app = Flask(__name__)
 
 # ============ PENGATURAN (silakan ubah) ============
-JUDUL = "Untuk Pendekk (Hasil Gabut)"
+JUDUL = " Buat Pendekkkk "  # judul halaman web (juga muncul di layar akhir)
 ARTIS = "Backstreet Boys"
 JUDUL_LAGU = "Shape of My Heart"
-PESAN_AWAL = "Buat Pendekkkk 156🗿"
+PESAN_AWAL = "Hadiah Buat Pendekkkk 156"
 TOMBOL_AWAL = "Mulai"
 FOTO_GANTI_DETIK = 5
 MAKS_FOTO = 7                      # batas foto yang bisa diupload pengunjung
@@ -366,8 +366,6 @@ HTML = r"""<!DOCTYPE html>
 <div id="judul">__JUDUL_HTML__<span class="meta-lagu" id="meta-lagu"></span></div>
 
 <div class="top-controls">
-  <button id="sync-minus" class="btn-pill" type="button" title="Percepat lirik 0.5 detik">-0.5s</button>
-  <button id="sync-plus" class="btn-pill" type="button" title="Perlambat lirik 0.5 detik">+0.5s</button>
   <button id="ctrl" class="btn-pill" type="button">Jeda</button>
 </div>
 
@@ -872,8 +870,6 @@ async function init() {
 
 mulaiBtn.addEventListener('click', start);
 ctrlBtn.addEventListener('click', toggle);
-document.getElementById('sync-minus').addEventListener('click', () => adjustSync(-0.5));
-document.getElementById('sync-plus').addEventListener('click', () => adjustSync(0.5));
 barwrap.addEventListener('click', e => {
   const r = barwrap.getBoundingClientRect();
   seekTo(((e.clientX - r.left) / r.width) * dur());
