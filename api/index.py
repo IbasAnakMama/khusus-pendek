@@ -13,10 +13,10 @@ from flask import Flask, Response, jsonify
 app = Flask(__name__)
 
 # ============ PENGATURAN (silakan ubah) ============
-JUDUL = "Untuk  Nenek Lampir😘"
+JUDUL = "Untuk Pendekk (Hasil Gabut)"
 ARTIS = "Backstreet Boys"
 JUDUL_LAGU = "Shape of My Heart"
-PESAN_AWAL = "Hadiah Buat Pendekkkk"
+PESAN_AWAL = "Buat Pendekkkk 156🗿"
 TOMBOL_AWAL = "Mulai"
 FOTO_GANTI_DETIK = 5
 MAKS_FOTO = 7                      # batas foto yang bisa diupload pengunjung
