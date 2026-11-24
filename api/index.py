@@ -19,6 +19,7 @@ JUDUL_LAGU = "Shape of My Heart"
 PESAN_AWAL = "Hadiah Buat Pendekkkk"
 TOMBOL_AWAL = "Mulai"
 FOTO_GANTI_DETIK = 5
+MAKS_FOTO = 7                      # batas foto yang bisa diupload pengunjung
 MULAI_LIRIK_DI_DETIK = 0.0        # detik ke berapa lirik pertama muncul di audio kamu (misal 0.0, 0.5, 1.0)
 OFFSET_LIRIK = 0.0                 # geser halus tambahan (bisa + atau - dalam detik)
 JEDA_FOTO_LOVE_DETIK = 0.35        # jeda muncul tiap foto membentuk love di akhir
@@ -26,12 +27,10 @@ TAHAN_LOVE_DETIK = 3.5             # berapa lama susunan love ditahan sebelum mu
 # ===================================================
 
 # File ini ada di api/, jadi root project = satu folder di atasnya.
-# Foto & lagu ada di folder public/ (disajikan Vercel langsung dari root URL).
+# Lagu & lirik ada di folder public/lagu/ (disajikan Vercel langsung dari root URL).
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "public"
-FOTO_DIR = STATIC / "foto"
 LAGU_DIR = STATIC / "lagu"
-FOTO_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"}
 AUDIO_EXT = {".mp3", ".m4a", ".ogg", ".wav", ".aac", ".flac"}
 
 # Jangan mkdir di sini: filesystem Vercel read-only.
@@ -83,11 +82,6 @@ def _geser_lrc(teks: str, target_first_sec: float, extra_offset: float) -> str:
 
 @app.route("/data")
 def data():
-    foto_all = FOTO_DIR.iterdir() if FOTO_DIR.is_dir() else []
-    fotos = sorted(
-        (f for f in foto_all if f.suffix.lower() in FOTO_EXT),
-        key=lambda f: f.name.lower(),
-    )
     lagu_all = sorted(LAGU_DIR.iterdir()) if LAGU_DIR.is_dir() else []
     audio = next((f for f in lagu_all if f.suffix.lower() in AUDIO_EXT), None)
     semua = [f for f in lagu_all if f.is_file()]
@@ -98,7 +92,6 @@ def data():
     lirik = _geser_lrc(lirik_mentah, float(MULAI_LIRIK_DI_DETIK), float(OFFSET_LIRIK))
 
     return jsonify(
-        fotos=[_url(f) for f in fotos],
         audio=_url(audio) if audio else None,
         lirik=lirik,
         files=[f.name for f in semua],
@@ -321,6 +314,7 @@ HTML = r"""<!DOCTYPE html>
     position: fixed; inset: 0; z-index: 25;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 18px;
+    justify-content: safe center; overflow-y: auto;
     padding: 24px; text-align: center;
     background: radial-gradient(ellipse at center, #2b101b 0%, #0a0508 75%);
     transition: opacity 0.8s ease;
@@ -338,6 +332,29 @@ HTML = r"""<!DOCTYPE html>
     box-shadow: 0 8px 25px rgba(255, 117, 151, 0.45);
   }
   #status { font-size: 12px; opacity: 0.6; max-width: 32em; line-height: 1.5; }
+  #upload-area {
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    width: 100%; max-width: 420px;
+  }
+  #pilih-foto {
+    padding: 10px 22px; font-size: 14px;
+    border-color: rgba(255, 182, 193, 0.55);
+  }
+  #pilih-foto:disabled, #mulai:disabled { opacity: 0.4; cursor: not-allowed; }
+  #thumbs { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; min-height: 4px; }
+  .thumb { position: relative; width: 56px; height: 70px; }
+  .thumb img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+    border-radius: 8px; border: 2px solid #fff;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.6);
+  }
+  .thumb button {
+    position: absolute; top: -7px; right: -7px;
+    width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%;
+    background: var(--rose); color: #fff; font-size: 14px; line-height: 20px;
+    cursor: pointer;
+  }
+  #foto-info { font-size: 12px; opacity: 0.75; }
 </style>
 </head>
 <body>
@@ -381,6 +398,12 @@ HTML = r"""<!DOCTYPE html>
 
 <div id="overlay">
   <h1 id="pesan">__PESAN__</h1>
+  <div id="upload-area">
+    <input type="file" id="file-input" accept="image/*" multiple hidden>
+    <button id="pilih-foto" class="btn-pill" type="button">+ Pilih foto (maks __MAKS_FOTO__)</button>
+    <div id="thumbs"></div>
+    <div id="foto-info"></div>
+  </div>
   <button id="mulai" type="button">__TOMBOL__</button>
   <div id="status"></div>
 </div>
@@ -388,6 +411,7 @@ HTML = r"""<!DOCTYPE html>
 <script>
 const CFG = {
   fotoDetik: __FOTO_DETIK__,
+  maksFoto: __MAKS_FOTO__,
   jedaLoveDetik: __JEDA_LOVE_DETIK__,
   tahanLoveDetik: __TAHAN_LOVE_DETIK__,
   artis: __ARTIS_JS__,
@@ -426,6 +450,46 @@ let curLine = -2, curPhoto = -1;
 let nudgeSec = 0;
 let finaleTimers = [];
 let inFinale = false;
+
+const fileInput = document.getElementById('file-input');
+const pilihBtn = document.getElementById('pilih-foto');
+const thumbsEl = document.getElementById('thumbs');
+const fotoInfo = document.getElementById('foto-info');
+
+function renderThumbs(pesanTambahan) {
+  thumbsEl.innerHTML = '';
+  fotos.forEach((url, i) => {
+    const box = document.createElement('div');
+    box.className = 'thumb';
+    const im = document.createElement('img');
+    im.src = url;
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.textContent = '×';
+    x.setAttribute('aria-label', 'Hapus foto');
+    x.addEventListener('click', () => {
+      URL.revokeObjectURL(url);
+      fotos.splice(i, 1);
+      renderThumbs();
+    });
+    box.append(im, x);
+    thumbsEl.appendChild(box);
+  });
+  fotoInfo.textContent = fotos.length + ' / ' + CFG.maksFoto + ' foto' + (pesanTambahan ? ' • ' + pesanTambahan : '');
+  pilihBtn.disabled = fotos.length >= CFG.maksFoto;
+  mulaiBtn.disabled = fotos.length === 0;
+}
+
+pilihBtn.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => {
+  const files = [...fileInput.files].filter(f => f.type.startsWith('image/'));
+  const sisa = CFG.maksFoto - fotos.length;
+  files.slice(0, sisa).forEach(f => fotos.push(URL.createObjectURL(f)));
+  const kelebihan = files.length > sisa;
+  fileInput.value = '';
+  renderThumbs(kelebihan ? 'maksimal ' + CFG.maksFoto + ' foto' : '');
+});
+renderThumbs();
 
 (function initParticles() {
   const canvas = document.getElementById('particles');
@@ -616,7 +680,7 @@ function showPhoto(p) {
     frameCap.textContent = `♥  ${idx + 1} / ${fotos.length}`;
   } else {
     img.style.display = 'none';
-    frameCap.textContent = 'Isi foto di public/foto';
+    frameCap.textContent = 'Pilih foto dulu';
   }
 
   img.style.setProperty('--x', ((Math.random() - 0.5) * 3) + '%');
@@ -753,6 +817,7 @@ function finish() {
 }
 
 async function start() {
+  if (!fotos.length) return;
   clearFinale();
   overlay.classList.add('hide');
   curLine = -2; curPhoto = -1; nudgeSec = 0;
@@ -788,7 +853,6 @@ async function init() {
   try {
     const r = await fetch('/data');
     const d = await r.json();
-    fotos = d.fotos || [];
     parseLyrics(d.lirik);
     if (d.audio) {
       audio = new Audio(d.audio);
@@ -798,7 +862,6 @@ async function init() {
       audio.addEventListener('error', () => { usingAudio = false; audio = null; });
     }
     const info = [];
-    info.push(fotos.length ? fotos.length + ' foto siap' : 'foto belum ada');
     info.push(d.audio ? 'lagu siap' : 'lagu belum ada');
     info.push(lines.length ? `${lines.length} baris lirik siap` : 'lirik belum ada');
     statusEl.textContent = info.join(' • ');
@@ -839,6 +902,7 @@ def index():
         .replace("__PESAN__", html.escape(PESAN_AWAL))
         .replace("__TOMBOL__", html.escape(TOMBOL_AWAL))
         .replace("__FOTO_DETIK__", str(FOTO_GANTI_DETIK))
+        .replace("__MAKS_FOTO__", str(MAKS_FOTO))
         .replace("__JEDA_LOVE_DETIK__", str(JEDA_FOTO_LOVE_DETIK))
         .replace("__TAHAN_LOVE_DETIK__", str(TAHAN_LOVE_DETIK))
     )
@@ -846,6 +910,5 @@ def index():
 
 
 if __name__ == "__main__":
-    print("Foto  :", FOTO_DIR)
     print("Lagu  :", LAGU_DIR)
     app.run(host="0.0.0.0", port=5000, debug=True)
