@@ -1,17 +1,3 @@
-"""
-Galeri Pribadi + Animasi Foto, Lagu & Lirik  (Flask, cocok untuk Vercel: api/index.py)
-
-- Masuk pakai PIN (dicek di server, sesi pakai cookie bertanda tangan)
-- Foto disimpan di Vercel Blob (private), jadi muncul di semua perangkat
-- Dua PIN: PIN_GALERI (pemilik: upload/hapus) dan PIN_PACAR (hanya melihat dan memutar animasi)
-- Lagu: taruh di public/lagu/ -> file audio + lirik .lrc dengan NAMA SAMA
-    contoh:  Backstreet Boys - Shape of My Heart.mp3
-             Backstreet Boys - Shape of My Heart.lrc
-  Opsional: file .json bernama sama untuk judul/artis/geser lirik:
-    {"judul": "Shape of My Heart", "artis": "Backstreet Boys", "mulai_lirik": 0, "offset": 0}
-  Kalau tidak ada .json, judul/artis diambil dari nama file ("Artis - Judul").
-"""
-
 import hashlib
 import hmac
 import html
@@ -24,7 +10,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 try:
-    from vercel.blob import sync as blob   # pip: vercel
+    from vercel.blob import sync as blob
 except Exception:
     blob = None
 
@@ -32,28 +18,25 @@ from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 app = Flask(__name__)
 
-# ============ PENGATURAN (silakan ubah) ============
-PIN = os.environ.get("PIN_GALERI", "1234")   # GANTI! Di Vercel: Settings > Environment Variables > PIN_GALERI (angka saja)
-PIN_PACAR = os.environ.get("PIN_PACAR", "")   # PIN untuk pacarmu (hanya lihat). Panjang harus SAMA dengan PIN. Kosong = dimatikan
+PIN = os.environ.get("PIN_GALERI", "1234")
+PIN_PACAR = os.environ.get("PIN_PACAR", "")
 NAMA_GALERI = "Galeri My MBG"
 JUDUL = "Buat Pendekkkk"
 PESAN_AWAL = "Hadiah Buat Pendekkkk 156"
 FOTO_GANTI_DETIK = 5
-MASA_LOGIN_JAM = 12                # berapa jam sampai PIN diminta lagi
-OFFSET_LIRIK = 0.0                 # geser halus semua lirik (detik, boleh minus)
+MASA_LOGIN_JAM = 12
+OFFSET_LIRIK = 0.0
 JEDA_FOTO_LOVE_DETIK = 0.35
 TAHAN_LOVE_DETIK = 3.5
-# ===================================================
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "public"
 LAGU_DIR = STATIC / "lagu"
 AUDIO_EXT = {".mp3", ".m4a", ".ogg", ".wav", ".aac", ".flac"}
 COOKIE = "galeri_sesi"
-_GAGAL = {}  # ip -> [jumlah, waktu pertama]  (pembatas percobaan PIN)
+_GAGAL = {}
 
 
-# ---------- keamanan PIN ----------
 def _rahasia() -> bytes:
     kunci = os.environ.get("SECRET_KEY") or hashlib.sha256(("galeri::" + PIN).encode()).hexdigest()
     return kunci.encode()
@@ -65,7 +48,6 @@ def _buat_token(peran: str) -> str:
 
 
 def _peran():
-    """None (belum login), 'admin' (pemilik) atau 'lihat' (pacar)."""
     try:
         v, peran, exp, sig = (request.cookies.get(COOKIE) or "").split(".")
         benar = hmac.new(_rahasia(), f"{v}.{peran}.{exp}".encode(), hashlib.sha256).hexdigest()
@@ -118,7 +100,6 @@ def logout():
     return resp
 
 
-# ---------- daftar lagu ----------
 def _url(path: Path) -> str:
     return "/" + "/".join(quote(p) for p in path.relative_to(STATIC).parts)
 
@@ -141,8 +122,6 @@ def _detik(m) -> float:
 
 
 def _geser_lrc(teks: str, mulai, offset: float) -> str:
-    """mulai='auto': kalau lirik pertama > 45 dtk, anggap audio dipotong -> geser ke detik 0.
-    mulai=angka: lirik pertama dipaksa di detik itu. mulai=None: tidak digeser."""
     ts = [_detik(m) for m in _POLA.finditer(teks)]
     if not ts:
         return teks
@@ -172,7 +151,7 @@ def _daftar_lagu():
     hasil = []
     for i, a in enumerate(audios):
         lf = lrc.get(a.stem.lower())
-        if lf is None and len(audios) == 1 and lrc:      # satu lagu saja: pasangkan lirik apa pun
+        if lf is None and len(audios) == 1 and lrc:
             lf = lrc[sorted(lrc)[0]]
         meta = {}
         mf = a.with_name(a.stem + ".json")
@@ -203,7 +182,6 @@ def data():
     return jsonify(lagu=_daftar_lagu(), peran=_peran())
 
 
-# ---------- foto di Vercel Blob (private) ----------
 _ID = re.compile(r"^\d{13}-[0-9a-f]{6}$")
 
 
@@ -251,7 +229,7 @@ def tambah_foto():
     if not f or not t:
         abort(400)
     fid = f"{int(time.time() * 1000)}-{secrets.token_hex(3)}"
-    try:  # thumb terakhir: foto baru muncul di daftar kalau keduanya sukses
+    try:
         blob.put_blob(f"foto/{fid}.jpg", f.read(), access="private", content_type="image/jpeg")
         blob.put_blob(f"thumb/{fid}.jpg", t.read(), access="private", content_type="image/jpeg")
     except Exception:
@@ -272,7 +250,7 @@ def hapus_foto(fid):
 
 
 @app.get("/lagu/<path:nama>")
-def file_lagu(nama):  # dipakai saat dijalankan lokal (di Vercel, public/ disajikan langsung)
+def file_lagu(nama):
     if not _sudah_login():
         abort(401)
     return send_from_directory(LAGU_DIR, nama)
@@ -329,7 +307,7 @@ HTML = r"""<!DOCTYPE html>
     --rose: #ff7597;
     --rose-soft: #ffb3c6;
   }
-  * { box-sizing: border-box; }
+- { box-sizing: border-box; }
   html, body {
     margin: 0; height: 100%; background: var(--ink); color: #fff; overflow: hidden;
     font-family: 'Georgia', 'Times New Roman', serif;
@@ -445,7 +423,6 @@ HTML = r"""<!DOCTYPE html>
     color: rgba(255, 228, 236, 0.48);
   }
 
-  /* ================= FINALE LOVE FOTO SATU PER SATU ================= */
   #heart-finale {
     position: fixed; inset: 0; z-index: 12;
     pointer-events: none; opacity: 0;
@@ -575,7 +552,6 @@ HTML = r"""<!DOCTYPE html>
   }
   #foto-info { font-size: 12px; opacity: 0.75; }
 
-  /* ================= GALERI ================= */
   body:not(.in-player) .pl { display: none !important; }
   body.in-player #view-gallery { display: none; }
   body:not(.in-player) #bg-blur { opacity: 0; }
@@ -1178,7 +1154,6 @@ barwrap.addEventListener('click', e => {
   seekTo(((e.clientX - r.left) / r.width) * dur());
 });
 
-/* ================= GALERI ================= */
 const $ = s => document.querySelector(s);
 const G = { items: [], sel: [], mode: false, anim: false, lagu: [], lb: -1 };
 const grid = $('#g-grid');
@@ -1247,7 +1222,6 @@ $('#sel-batal').addEventListener('click', () => { G.mode = false; G.anim = false
 $('#sel-hapus').addEventListener('click', () => hapus(G.sel.slice()));
 $('#b-kunci').addEventListener('click', async () => { await fetch('/api/logout', { method: 'POST' }); location.reload(); });
 
-/* ----- tambah foto ----- */
 function muatGbr(f) {
   return new Promise((ok, no) => {
     const u = URL.createObjectURL(f), im = new Image();
@@ -1295,7 +1269,6 @@ async function hapus(ids) {
   toast(gagal ? 'Sebagian foto gagal dihapus' : 'Foto dihapus');
 }
 
-/* ----- lightbox ----- */
 function tampilLB() {
   const it = G.items[G.lb]; if (!it) return;
   $('#lb-img').src = it.url; $('#lb-dl').href = it.url;
@@ -1312,7 +1285,6 @@ let sx = null;
 $('#lb').addEventListener('pointerdown', e => { sx = e.clientX; });
 $('#lb').addEventListener('pointerup', e => { if (sx !== null && Math.abs(e.clientX - sx) > 60) geserLB(e.clientX < sx ? 1 : -1); sx = null; });
 
-/* ----- pilih lagu & putar ----- */
 function bukaSheet() {
   let last = ''; try { last = localStorage.getItem('lagu-terakhir') || ''; } catch (e) {}
   const pilih = G.lagu.findIndex(s => s.id === last);
@@ -1362,8 +1334,8 @@ window.addEventListener('keydown', e => {
     const d = await r.json();
     G.lagu = d.lagu || [];
     if (d.peran === 'lihat') document.body.classList.add('viewer');
-  } catch (e) { /* tanpa lagu */ }
-  try { await muat(); } catch (e) { /* sudah ditangani */ }
+  } catch (e) {}
+  try { await muat(); } catch (e) {}
 })();
 requestAnimationFrame(tick);
 </script>
