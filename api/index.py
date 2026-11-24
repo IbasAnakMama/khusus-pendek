@@ -25,20 +25,21 @@ JEDA_FOTO_LOVE_DETIK = 0.35        # jeda muncul tiap foto membentuk love di akh
 TAHAN_LOVE_DETIK = 3.5             # berapa lama susunan love ditahan sebelum muncul layar selesai
 # ===================================================
 
-BASE = Path(__file__).resolve().parent
-STATIC = BASE / "static"
+# File ini ada di api/, jadi root project = satu folder di atasnya.
+# Foto & lagu ada di folder public/ (disajikan Vercel langsung dari root URL).
+ROOT = Path(__file__).resolve().parent.parent
+STATIC = ROOT / "public"
 FOTO_DIR = STATIC / "foto"
 LAGU_DIR = STATIC / "lagu"
 FOTO_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"}
 AUDIO_EXT = {".mp3", ".m4a", ".ogg", ".wav", ".aac", ".flac"}
 
-FOTO_DIR.mkdir(parents=True, exist_ok=True)
-LAGU_DIR.mkdir(parents=True, exist_ok=True)
+# Jangan mkdir di sini: filesystem Vercel read-only.
 
 
 def _url(path: Path) -> str:
     rel = path.relative_to(STATIC)
-    return "/static/" + "/".join(quote(p) for p in rel.parts)
+    return "/" + "/".join(quote(p) for p in rel.parts)
 
 
 def _baca_teks(f: Path) -> str:
@@ -82,14 +83,14 @@ def _geser_lrc(teks: str, target_first_sec: float, extra_offset: float) -> str:
 
 @app.route("/data")
 def data():
+    foto_all = FOTO_DIR.iterdir() if FOTO_DIR.is_dir() else []
     fotos = sorted(
-        (f for f in FOTO_DIR.iterdir() if f.suffix.lower() in FOTO_EXT),
+        (f for f in foto_all if f.suffix.lower() in FOTO_EXT),
         key=lambda f: f.name.lower(),
     )
-    audio = next(
-        (f for f in sorted(LAGU_DIR.iterdir()) if f.suffix.lower() in AUDIO_EXT), None
-    )
-    semua = sorted(f for f in LAGU_DIR.iterdir() if f.is_file())
+    lagu_all = sorted(LAGU_DIR.iterdir()) if LAGU_DIR.is_dir() else []
+    audio = next((f for f in lagu_all if f.suffix.lower() in AUDIO_EXT), None)
+    semua = [f for f in lagu_all if f.is_file()]
     kandidat = [f for f in semua if f.suffix.lower() == ".lrc"] + [
         f for f in semua if f.suffix.lower() == ".txt"
     ]
@@ -615,7 +616,7 @@ function showPhoto(p) {
     frameCap.textContent = `♥  ${idx + 1} / ${fotos.length}`;
   } else {
     img.style.display = 'none';
-    frameCap.textContent = 'Isi foto di static/foto';
+    frameCap.textContent = 'Isi foto di public/foto';
   }
 
   img.style.setProperty('--x', ((Math.random() - 0.5) * 3) + '%');
