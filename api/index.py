@@ -35,7 +35,7 @@ app = Flask(__name__)
 # ============ PENGATURAN (silakan ubah) ============
 PIN = os.environ.get("PIN_GALERI", "1234")   # GANTI! Di Vercel: Settings > Environment Variables > PIN_GALERI (angka saja)
 PIN_PACAR = os.environ.get("PIN_PACAR", "")   # PIN untuk pacarmu (hanya lihat). Panjang harus SAMA dengan PIN. Kosong = dimatikan
-NAMA_GALERI = "Galeri Kenangan"
+NAMA_GALERI = "Galeri My MBG"
 JUDUL = "Buat Pendekkkk"
 PESAN_AWAL = "Hadiah Buat Pendekkkk 156"
 FOTO_GANTI_DETIK = 5
