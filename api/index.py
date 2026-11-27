@@ -20,7 +20,6 @@ app = Flask(__name__)
 
 PIN = os.environ.get("PIN_GALERI", "1234")
 PIN_PACAR = os.environ.get("PIN_PACAR", "")
-PANGGILAN = "Pendekkkk"
 NAMA_GALERI = "Galeri My MBG"
 JUDUL = "Buat Pendekkkk"
 PESAN_AWAL = "Hadiah Buat Pendekkkk 156"
@@ -699,7 +698,7 @@ HTML = r"""<!DOCTYPE html>
   #karakter .k { display: inline-block; transform-origin: 50% 90%; animation: var(--kan) 2.6s ease-in-out infinite; filter: drop-shadow(0 4px 10px rgba(0,0,0,.5)); }
   #karakter .item { position: absolute; right: -14px; top: -6px; font-size: .5em; animation: floaty 2s ease-in-out infinite; }
   #karakter.lompat .k { animation: lompat .55s ease-out; }
-  #gelembung { position: fixed; left: calc(14px + clamp(44px, 10vw, 66px) + 8px); bottom: calc(max(24px, env(safe-area-inset-bottom)) + 34px); max-width: min(58vw, 240px); background: #fff; color: #4a1f2c; padding: 8px 12px; border-radius: 16px 16px 16px 4px; font-size: 13px; line-height: 1.35; z-index: 7; pointer-events: none; opacity: 0; transform: translateY(6px) scale(.9); transform-origin: 0 100%; transition: opacity .3s, transform .3s; box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+  #gelembung { position: fixed; left: calc(14px + clamp(44px, 10vw, 66px) + 8px); bottom: calc(max(24px, env(safe-area-inset-bottom)) + 34px); background: #fff; padding: 6px 12px; border-radius: 18px 18px 18px 4px; font-size: 26px; line-height: 1.2; white-space: nowrap; z-index: 7; pointer-events: none; opacity: 0; transform: translateY(6px) scale(.9); transform-origin: 0 100%; transition: opacity .3s, transform .3s; box-shadow: 0 6px 18px rgba(0,0,0,.45); }
   #gelembung.on { opacity: 1; transform: none; }
   @keyframes sway { 0%, 100% { transform: rotate(-6deg); } 50% { transform: rotate(6deg); } }
   @keyframes hop { 0%, 60%, 100% { transform: translateY(0) scale(1, 1); } 70% { transform: translateY(0) scale(1.1, .88); } 82% { transform: translateY(-16px) scale(.94, 1.08); } }
@@ -811,8 +810,7 @@ const CFG = {
   jedaLoveDetik: __JEDA_LOVE_DETIK__,
   tahanLoveDetik: __TAHAN_LOVE_DETIK__,
   artis: __ARTIS_JS__,
-  judulLagu: __JUDUL_LAGU_JS__,
-  panggilan: __PANGGILAN_JS__
+  judulLagu: __JUDUL_LAGU_JS__
 };
 
 function renderSongMeta() {
@@ -853,32 +851,32 @@ const BINGKAI = { polaroid: 'Polaroid', hati: 'Hati', bulat: 'Bulat', bintang: '
 const TEMA = {
   hati: {
     nama: 'Hujan Hati', char: ['🐻', '💗'], bingkai: 'polaroid', trans: 'zoom',
-    pesan: ['{n}, aku sayang kamu banget 💕', 'Kamu alasan aku senyum hari ini', 'Cuma kamu yang ada di pikiranku', 'Peluk jauh dari aku ya, {n}', 'Aku bucin kamu, beneran'],
+    ekspresi: ['💕', '🥰', '😍', '😘', '💗', '😊'],
     fx: { n: 36, dir: 'up', shapes: ['heart', 'petal', 'spark'], colors: ['#ff7597', '#ffb3c6', '#ffd6e0', '#fff0f3', '#ff8fab'], size: [5, 13], vy: [0.35, 1.1], wob: 0.45, alpha: [0.28, 0.7], burst: 'heart' }
   },
   bintang: {
     nama: 'Langit Bintang', char: ['🐰', '🌙'], bingkai: 'bintang', trans: 'blur',
-    pesan: ['{n}, kamu bintang paling terang buatku', 'Setiap malam aku mikirin kamu', 'Kalau bintang jatuh, aku minta kamu terus', 'Kamu duniaku, {n} ✨', 'Aku sayang kamu sampai ke bulan'],
+    ekspresi: ['✨', '🥰', '🌙', '💫', '😍', '💕'],
     fx: { n: 80, dir: 'still', shapes: ['star', 'spark', 'dot'], colors: ['#fff6c9', '#ffe58a', '#cdd6ff', '#ffffff'], size: [1.5, 5], alpha: [0.5, 1], twinkle: true, shoot: true, burst: 'star' }
   },
   sakura: {
     nama: 'Sakura Cinta', char: ['🐱', '🌸'], bingkai: 'lengkung', trans: 'slide',
-    pesan: ['{n}, kamu secantik sakura 🌸', 'Meong~ aku kangen kamu', 'Bareng kamu semuanya jadi indah', 'Aku sayang kamu, {n}', 'Jangan pergi ya, tetap sama aku'],
+    ekspresi: ['🌸', '😻', '🥰', '💕', '😽', '😊'],
     fx: { n: 34, dir: 'down', shapes: ['blossom', 'petal'], colors: ['#ffc2d4', '#ffd9e4', '#fff0f4', '#ff9fbe'], size: [6, 12], vy: [0.6, 1.5], wob: 0.5, drift: 0.9, alpha: [0.5, 0.9], burst: 'blossom' }
   },
   permen: {
     nama: 'Permen Manis', char: ['🐥', '🍭'], bingkai: 'bulat', trans: 'drop',
-    pesan: ['{n}, kamu lebih manis dari permen 🍭', 'Piyo piyo, aku sayang kamu!', 'Kamu bikin hariku warna-warni', 'Aku bucin parah sama kamu, {n}', 'Cuma kamu permen favoritku'],
+    ekspresi: ['🍭', '😋', '💖', '🥰', '😍', '🎀'],
     fx: { n: 30, dir: 'up', shapes: ['bubble', 'dot', 'heart', 'spark'], colors: ['#ff9ecb', '#9ee7ff', '#ffe27a', '#b9a2ff', '#a5f3c3'], size: [6, 18], vy: [0.5, 1.4], wob: 0.5, alpha: [0.5, 0.9], pop: true, burst: 'bubble' }
   },
   neon: {
     nama: 'Neon Malam', char: ['🦊', '💖'], bingkai: 'film', trans: 'flip',
-    pesan: ['{n}, kamu bikin hatiku menyala', 'Aku jatuh cinta sama kamu tiap hari', 'Kamu satu-satunya yang kumau', 'Cinta ini bersinar buat kamu, {n}', 'Selamanya cuma kamu'],
+    ekspresi: ['💖', '😍', '🔥', '😘', '💘', '🥰'],
     fx: { n: 28, dir: 'orbit', shapes: ['firefly', 'heartline'], colors: ['#ff3d9a', '#37e8ff', '#ff8ad9', '#9b6bff'], size: [3, 8], alpha: [0.6, 1], trail: true, glow: true, burst: 'heartline' }
   },
   salju: {
     nama: 'Salju Cinta', char: ['🐧', '❄️'], bingkai: 'hati', trans: 'zin',
-    pesan: ['{n}, pelukmu paling hangat buatku', 'Dingin pun terasa hangat kalau ada kamu', 'Aku sayang kamu, {n} ❄️', 'Kamu hadiah terindah buatku', 'Mau terus peluk kamu'],
+    ekspresi: ['❄️', '🥰', '😊', '💙', '😍', '🤗'],
     fx: { n: 60, dir: 'down', shapes: ['flake', 'dot', 'spark'], colors: ['#ffffff', '#dff3ff', '#bfe6ff'], size: [3, 9], vy: [0.4, 1.2], wob: 0.4, drift: 0.5, alpha: [0.5, 0.95], burst: 'flake' }
   }
 };
@@ -1043,8 +1041,9 @@ function bicara(txt) {
 }
 
 function pesanAcak() {
-  const l = TEMA[temaAktif].pesan;
-  return l[Math.floor(Math.random() * l.length)].replace('{n}', CFG.panggilan || 'Sayang');
+  const l = TEMA[temaAktif].ekspresi;
+  const a = l[Math.floor(Math.random() * l.length)];
+  return Math.random() < 0.4 ? a + l[Math.floor(Math.random() * l.length)] : a;
 }
 
 function lompatKar() {
@@ -1590,7 +1589,6 @@ def index():
             .replace("__NAMA_GALERI__", html.escape(NAMA_GALERI))
             .replace("__ARTIS_JS__", '""')
             .replace("__JUDUL_LAGU_JS__", '""')
-            .replace("__PANGGILAN_JS__", json.dumps(PANGGILAN, ensure_ascii=False).replace("<", "\\u003c"))
             .replace("__PESAN__", html.escape(PESAN_AWAL))
             .replace("__FOTO_DETIK__", str(FOTO_GANTI_DETIK))
             .replace("__MAKS_FOTO__", "0")
