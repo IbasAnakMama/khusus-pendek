@@ -28,6 +28,10 @@ MASA_LOGIN_JAM = 12
 OFFSET_LIRIK = 0.0
 JEDA_FOTO_LOVE_DETIK = 0.35
 TAHAN_LOVE_DETIK = 3.5
+LAGU_KHUSUS = {
+    "shape-of-my-heart": {"lirik": "lirik.lrc", "judul": "Shape of My Heart", "artis": "Backstreet Boys"},
+    "i-lay-my-love-on": {"lirik": "lirik2.lrc", "judul": "I Lay My Love on You", "artis": "Westlife"},
+}
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "public"
@@ -149,18 +153,22 @@ def _daftar_lagu():
         if f.suffix.lower() in (".lrc", ".txt") and (f.stem.lower() not in lrc or f.suffix.lower() == ".lrc"):
             lrc[f.stem.lower()] = f
     hasil = []
+    ada = {f.name.lower(): f for f in files}
     for i, a in enumerate(audios):
-        lf = lrc.get(a.stem.lower())
+        info = next((v for k, v in LAGU_KHUSUS.items() if k.lower() in a.name.lower()), {})
+        lf = ada.get(str(info.get("lirik", "")).lower()) or lrc.get(a.stem.lower())
         if lf is None and len(audios) == 1 and lrc:
             lf = lrc[sorted(lrc)[0]]
-        meta = {}
+        meta = {k: v for k, v in info.items() if k != "lirik"}
         mf = a.with_name(a.stem + ".json")
         if mf.exists():
             try:
-                meta = json.loads(_baca_teks(mf))
+                meta.update(json.loads(_baca_teks(mf)))
             except Exception:
-                meta = {}
+                pass
         nama = a.stem.replace("_", " ")
+        if " - " not in nama:
+            nama = nama.replace("-", " ").title()
         artis, judul = (nama.split(" - ", 1) if " - " in nama else ("", nama))
         teks = _baca_teks(lf) if lf else ""
         teks = _geser_lrc(teks, meta.get("mulai_lirik", "auto"),
