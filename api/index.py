@@ -24,7 +24,8 @@ NAMA_GALERI = "Galeri My MBG"
 JUDUL = "Buat Pendekkkk"
 PESAN_AWAL = "Hadiah Buat Pendekkkk 156"
 FOTO_GANTI_DETIK = 5
-MASA_LOGIN_JAM = 12
+SESI_DIAM_MENIT = 15
+SESI_MAKS_MENIT = 60
 OFFSET_LIRIK = 0.0
 JEDA_FOTO_LOVE_DETIK = 0.35
 TAHAN_LOVE_DETIK = 3.5
@@ -46,20 +47,55 @@ def _rahasia() -> bytes:
     return kunci.encode()
 
 
-def _buat_token(peran: str) -> str:
-    pesan = f"v2.{peran}.{int(time.time() + MASA_LOGIN_JAM * 3600)}"
+def _buat_token(peran: str, mulai=None, aktif=None) -> str:
+    kini = int(time.time())
+    pesan = f"v3.{peran}.{mulai or kini}.{aktif or kini}"
     return pesan + "." + hmac.new(_rahasia(), pesan.encode(), hashlib.sha256).hexdigest()
 
 
-def _peran():
+def _sesi():
     try:
-        v, peran, exp, sig = (request.cookies.get(COOKIE) or "").split(".")
-        benar = hmac.new(_rahasia(), f"{v}.{peran}.{exp}".encode(), hashlib.sha256).hexdigest()
-        if v == "v2" and peran in ("admin", "lihat") and hmac.compare_digest(sig, benar) and int(exp) > time.time():
-            return peran
+        v, peran, mulai, aktif, sig = (request.cookies.get(COOKIE) or "").split(".")
+        benar = hmac.new(_rahasia(), f"{v}.{peran}.{mulai}.{aktif}".encode(), hashlib.sha256).hexdigest()
+        kini = time.time()
+        if (v == "v3" and peran in ("admin", "lihat") and hmac.compare_digest(sig, benar)
+                and kini - int(mulai) < SESI_MAKS_MENIT * 60 and kini - int(aktif) < SESI_DIAM_MENIT * 60):
+            return peran, int(mulai), int(aktif)
     except Exception:
         pass
     return None
+
+
+def _peran():
+    s = _sesi()
+    return s[0] if s else None
+
+
+def _sisa_maks() -> int:
+    s = _sesi()
+    return max(0, int(s[1] + SESI_MAKS_MENIT * 60 - time.time())) if s else 0
+
+
+def _https() -> bool:
+    return request.is_secure or request.headers.get("x-forwarded-proto") == "https"
+
+
+@app.after_request
+def _perbarui_sesi(resp):
+    if request.path in ("/api/login", "/api/logout"):
+        return resp
+    s = _sesi()
+    if s and time.time() - s[2] > 20:
+        resp.set_cookie(COOKIE, _buat_token(s[0], s[1]), max_age=max(1, _sisa_maks()),
+                        httponly=True, samesite="Lax", secure=_https())
+    return resp
+
+
+@app.post("/api/ping")
+def ping():
+    if not _sesi():
+        abort(401)
+    return jsonify(sisa=_sisa_maks())
 
 
 def _sudah_login() -> bool:
@@ -88,9 +124,8 @@ def login():
     if peran:
         _GAGAL.pop(ip, None)
         resp = jsonify(ok=True)
-        https = request.is_secure or request.headers.get("x-forwarded-proto") == "https"
-        resp.set_cookie(COOKIE, _buat_token(peran), max_age=MASA_LOGIN_JAM * 3600,
-                        httponly=True, samesite="Lax", secure=https)
+        resp.set_cookie(COOKIE, _buat_token(peran), max_age=SESI_MAKS_MENIT * 60,
+                        httponly=True, samesite="Lax", secure=_https())
         return resp
     _GAGAL[ip] = [(cat[0] + 1) if cat else 1, cat[1] if cat else kini]
     time.sleep(0.7)
@@ -187,7 +222,7 @@ def _daftar_lagu():
 def data():
     if not _sudah_login():
         abort(401)
-    return jsonify(lagu=_daftar_lagu(), peran=_peran())
+    return jsonify(lagu=_daftar_lagu(), peran=_peran(), sesi={"maks": _sisa_maks(), "diam": SESI_DIAM_MENIT * 60})
 
 
 _ID = re.compile(r"^\d{13}-[0-9a-f]{6}$")
@@ -1569,12 +1604,40 @@ window.addEventListener('keydown', e => {
   } else if (e.code === 'Escape' && G.mode) $('#sel-batal').click();
 });
 
+const Sesi = { batas: 0, diam: 900000, aktif: Date.now(), ping: 0, peringatan: false };
+['pointerdown', 'keydown', 'touchstart', 'wheel', 'scroll'].forEach(e =>
+  window.addEventListener(e, () => { Sesi.aktif = Date.now(); Sesi.peringatan = false; }, { passive: true, capture: true })
+);
+function kunciSesi() { fetch('/api/logout', { method: 'POST' }).finally(() => location.reload()); }
+function mulaiSesi(x) {
+  if (!x) return;
+  Sesi.batas = Date.now() + x.maks * 1000;
+  Sesi.diam = x.diam * 1000;
+  setInterval(async () => {
+    const kini = Date.now();
+    const bermain = started && playing;
+    if (bermain) Sesi.aktif = kini;
+    if (kini >= Sesi.batas || kini - Sesi.aktif >= Sesi.diam) return kunciSesi();
+    const sisa = Math.min(Sesi.batas - kini, Sesi.diam - (kini - Sesi.aktif));
+    if (sisa < 60000 && !Sesi.peringatan) { Sesi.peringatan = true; toast('Sesi hampir habis, terkunci kurang dari 1 menit lagi', 5000); }
+    if (kini - Sesi.ping > 60000 && (bermain || kini - Sesi.aktif < 60000)) {
+      Sesi.ping = kini;
+      try {
+        const r = await fetch('/api/ping', { method: 'POST' });
+        if (r.status === 401) return kunciSesi();
+        Sesi.batas = Date.now() + (await r.json()).sisa * 1000;
+      } catch (e) {}
+    }
+  }, 5000);
+}
+
 (async function init() {
   try {
     const r = await fetch('/data');
     if (r.status === 401) { location.reload(); return; }
     const d = await r.json();
     G.lagu = d.lagu || [];
+    mulaiSesi(d.sesi);
     if (d.peran === 'lihat') document.body.classList.add('viewer');
   } catch (e) {}
   try { await muat(); } catch (e) {}
